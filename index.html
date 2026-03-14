@@ -2540,16 +2540,45 @@ document.addEventListener('mousemove',e=>{
       }
     }
 
-    // 5→6. Apply wall geometry FIRST so children see correct parent position
+    // 5. Hard-clamp against sibling walls (Rule 3 — no overlap ever)
+    // For each sibling wall, limit the growing edges so they can't cross into it.
+    S.nodes.filter(s=>
+      s.id!==n.id && s.isBound &&
+      (s.parent||null)===(n.parent||null)
+    ).forEach(s=>{
+      // Which edges of n are moving toward s?
+      if(d.includes('e') && nx<s.x && nx+nw>s.x)       nw=s.x-nx          // right edge hits s left
+      if(d.includes('s') && ny<s.y && ny+nh>s.y)        nh=s.y-ny          // bottom edge hits s top
+      if(d.includes('w') && s.x+s.w>nx && s.x+s.w<r.ox+r.ow){ nx=s.x+s.w; nw=r.ox+r.ow-nx } // left edge hits s right
+      if(d.includes('n') && s.y+s.h>ny && s.y+s.h<r.oy+r.oh){ ny=s.y+s.h; nh=r.oy+r.oh-ny } // top edge hits s bottom
+      // Also handle overlap in the non-resizing axis: if n already overlaps s
+      // horizontally/vertically, block entirely on the growing axis
+      const overlapX=nx<s.x+s.w && nx+nw>s.x
+      const overlapY=ny<s.y+s.h && ny+nh>s.y
+      if(overlapX&&overlapY){
+        // Still overlapping after axis clamp — use minimum penetration to resolve
+        const penE=nx+nw-s.x, penW=s.x+s.w-nx, penS=ny+nh-s.y, penN=s.y+s.h-ny
+        if(d.includes('e')&&penE>0) nw-=penE
+        if(d.includes('s')&&penS>0) nh-=penS
+        if(d.includes('w')&&penW>0){ nw-=penW; nx+=penW }
+        if(d.includes('n')&&penN>0){ nh-=penN; ny+=penN }
+      }
+    })
+
+    // Re-enforce min size after sibling clamp
+    if(nw<MIN_W){ nw=MIN_W; if(d.includes('w')) nx=r.ox+r.ow-nw }
+    if(nh<MIN_H){ nh=MIN_H; if(d.includes('n')) ny=r.oy+r.oh-nh }
+
+    // 6. Apply wall geometry
     const cdx=nx-n.x, cdy=ny-n.y
     n.x=nx; n.y=ny; n.w=nw; n.h=nh
     const el=document.getElementById('nd-'+r.id)
     if(el){el.style.left=nx+'px'; el.style.top=ny+'px'; el.style.width=nw+'px'; el.style.height=nh+'px'}
 
-    // 7. Shift children by TL delta (they move with the wall)
+    // 7. Shift children by TL delta
     if(cdx!==0||cdy!==0) cascadeShift(n.id, cdx, cdy, NM)
 
-    // 8. enforceInvariants clamps anything that ended up outside
+    // 8. enforceInvariants as final safety net
     enforceInvariants()
     renderEdges(); updateMinimap(); return
   }
