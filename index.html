@@ -2236,6 +2236,9 @@ function enforceInvariants(){
   })
 
   // I2: no two nodes at the same level overlap
+  // During resize/drag, the active node is the anchor — never push it.
+  const activeId = S.resizing?.id || S.drag?.id || null
+
   const groups={}
   S.nodes.forEach(n=>{
     const key=n.parent||'__root__'
@@ -2244,58 +2247,48 @@ function enforceInvariants(){
 
   Object.values(groups).forEach(group=>{
     if(group.length<2) return
-    for(let pass=0;pass<12;pass++){
+    for(let pass=0;pass<8;pass++){
       let anyMoved=false
       for(let i=0;i<group.length;i++){
         for(let j=i+1;j<group.length;j++){
           const a=group[i], b=group[j]
           if(!rectsOverlap(nodeRect(a),nodeRect(b))) continue
 
-          // Compute penetration on each axis
-          const penL=(a.x+a.w)-b.x  // b must go right
-          const penR=(b.x+b.w)-a.x  // b must go left
-          const penT=(a.y+a.h)-b.y  // b must go down
-          const penB=(b.y+b.h)-a.y  // b must go up
+          const penL=(a.x+a.w)-b.x, penR=(b.x+b.w)-a.x
+          const penT=(a.y+a.h)-b.y, penB=(b.y+b.h)-a.y
           const minPen=Math.min(penL,penR,penT,penB)
 
-          // wall vs wall: split the push equally
-          // wall vs leaf: leaf absorbs all movement
-          // leaf vs leaf: b absorbs all
-          const bothWalls = a.isBound && b.isBound
-          const aIsWall = a.isBound && !b.isBound
-          const bIsWall = !a.isBound && b.isBound
+          // Active node (being resized/dragged) is always the anchor — never moves
+          const aActive = a.id===activeId, bActive = b.id===activeId
+          // Wall beats leaf; active beats everything
+          const aWins = aActive || (a.isBound && !b.isBound && !bActive)
+          const bWins = bActive || (b.isBound && !a.isBound && !aActive)
 
-          function applyMove(node, dx, dy){
-            let nx=node.x+dx, ny=node.y+dy
-            if(node.parent){
-              const par=NM[node.parent]
-              if(par&&par.isBound){ const c=clampInsideWall(nx,ny,node.w||NW,node.h||NH,par); nx=c.x; ny=c.y }
+          // Determine mover: if both win or both lose → push b (j)
+          const mover  = (!bWins && !aWins) ? b : bWins ? a : b
+          const anchor = mover===b ? a : b
+          if(mover.id===activeId) continue  // never move the active node
+
+          let dx=0, dy=0
+          const pen = minPen
+          if(pen===penL) dx = anchor===a ?  penL : -penL
+          else if(pen===penR) dx = anchor===a ? -penR :  penR
+          else if(pen===penT) dy = anchor===a ?  penT : -penT
+          else               dy = anchor===a ? -penB :  penB
+
+          let nx=mover.x+dx, ny=mover.y+dy
+          if(mover.parent){
+            const par=NM[mover.parent]
+            if(par&&par.isBound){
+              const c=clampInsideWall(nx,ny,mover.w||NW,mover.h||NH,par)
+              nx=c.x; ny=c.y
             }
-            const adx=nx-node.x, ady=ny-node.y
-            if(!adx&&!ady) return false
-            node.x=nx; node.y=ny; _domMove(node.id,nx,ny); cascadeShift(node.id,adx,ady,NM)
-            return true
           }
-
-          let moved=false
-          if(minPen===penL){ // push b right (or a left)
-            if(bothWalls){ moved=applyMove(a,-penL/2,0)||applyMove(b,penL/2,0)||moved }
-            else if(aIsWall){ moved=applyMove(b,penL,0) }
-            else { moved=applyMove(bIsWall?a:b, bIsWall?-penL:penL, 0) }
-          } else if(minPen===penR){ // push b left
-            if(bothWalls){ moved=applyMove(a,penR/2,0)||applyMove(b,-penR/2,0)||moved }
-            else if(aIsWall){ moved=applyMove(b,-penR,0) }
-            else { moved=applyMove(bIsWall?a:b, bIsWall?penR:-penR, 0) }
-          } else if(minPen===penT){ // push b down
-            if(bothWalls){ moved=applyMove(a,0,-penT/2)||applyMove(b,0,penT/2)||moved }
-            else if(aIsWall){ moved=applyMove(b,0,penT) }
-            else { moved=applyMove(bIsWall?a:b, 0, bIsWall?-penT:penT) }
-          } else { // push b up
-            if(bothWalls){ moved=applyMove(a,0,penB/2)||applyMove(b,0,-penB/2)||moved }
-            else if(aIsWall){ moved=applyMove(b,0,-penB) }
-            else { moved=applyMove(bIsWall?a:b, 0, bIsWall?penB:-penB) }
-          }
-          if(moved) anyMoved=true
+          const adx=nx-mover.x, ady=ny-mover.y
+          if(!adx&&!ady) continue
+          mover.x=nx; mover.y=ny; _domMove(mover.id,nx,ny)
+          cascadeShift(mover.id,adx,ady,NM)
+          anyMoved=true
         }
       }
       if(!anyMoved) break
@@ -2564,15 +2557,14 @@ document.addEventListener('mousemove',e=>{
       if(d.includes('n') && hOverlap && T < sB) T = Math.min(B-MIN_H, sB)
     })
 
-    // ── 5. Parent wall: grow parent if this child pushes past its inner edge ──
-    // Grow the parent's outer shell only. Siblings stay at their world coords — no shift.
+    // ── 5. Parent wall: clamp to parent inner rect — no escaping ──
     if(n.parent){
       const par=NM[n.parent]; if(par){
         const pr=wallRect(par)
-        if(d.includes('e') && R > pr.x2){ par.w += R-pr.x2; _domWall(par) }
-        if(d.includes('s') && B > pr.y2){ par.h += B-pr.y2; _domWall(par) }
-        if(d.includes('w') && L < pr.x1){ const g=pr.x1-L; par.x-=g; par.w+=g; _domWall(par) }
-        if(d.includes('n') && T < pr.y1){ const g=pr.y1-T; par.y-=g; par.h+=g; _domWall(par) }
+        if(d.includes('e')) R=Math.min(R, pr.x2)
+        if(d.includes('s')) B=Math.min(B, pr.y2)
+        if(d.includes('w')) L=Math.max(L, pr.x1)
+        if(d.includes('n')) T=Math.max(T, pr.y1)
       }
     }
 
