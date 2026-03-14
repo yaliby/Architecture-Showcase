@@ -1404,7 +1404,7 @@ function parseDSL(src){
 const NW=164,NH=56,GAP=20,BP=28,BH=34
 const BP_V=24  // vertical padding inside boundary (below header)
 
-function autoLayout(nodes){
+function autoLayout(nodes, edges){
   const childOf={}
   nodes.forEach(n=>{if(n.parent)(childOf[n.parent]=childOf[n.parent]||[]).push(n.id)})
   nodes.forEach(n=>{
@@ -1466,72 +1466,209 @@ function autoLayout(nodes){
     })
   }
 
-  // ── Root layout: grid that uses edge topology for smarter placement ──
-  const roots=nodes.filter(n=>!n.parent)
-  if(!roots.length) return nodes
+  // ════════════════════════════════════════════════════════
+  // SMART LAYOUT ENGINE
+  // Uses graph topology + visual weight to compute 2-D positions
+  // ════════════════════════════════════════════════════════
 
-  // Pre-measure all roots
-  roots.forEach(r=>measure(r.id))
+  const roots = nodes.filter(n => !n.parent)
+  if (!roots.length) return nodes
 
-  // Build a graph among roots to detect flow direction hints
-  // (edges are passed in via S.edges if available, else we fall back to pure grid)
-  const rootIds=new Set(roots.map(r=>r.id))
+  edges = edges || []
+  roots.forEach(r => measure(r.id))
 
-  // Helper: find root ancestor of a node
-  function rootAncestor(id){
-    let cur=NM[id]; while(cur&&cur.parent) cur=NM[cur.parent]; return cur
+  // ── Topology helpers ──────────────────────────────────────
+  // Map node id → root ancestor id
+  function rootOf(id) {
+    let cur = NM[id]
+    while (cur && cur.parent) cur = NM[cur.parent]
+    return cur ? cur.id : id
   }
 
-  // Decide on a column count that gives a roughly balanced 16:9 aspect ratio
-  // Strategy: try to fit into rows so that total width ≈ 1.6 × total height
-  const totalArea=roots.reduce((s,r)=>{const m=sizeCache[r.id];return s+(m.w+60)*(m.h+60)},0)
-  const targetW=Math.sqrt(totalArea*1.6)
-  
-  // Assign roots to a 2-D grid using a simple left-to-right, wrap approach
-  // but weigh wider nodes more so we don't get jagged rows
-  const HGAP=60, VGAP=60
-  const MARGIN=80
+  // Build root-level adjacency (count cross-root edges)
+  const degree   = {}   // total edges touching this root
+  const outLinks = {}   // outLinks[a][b] = # directed edges a→b
+  const inLinks  = {}   // inLinks[b][a]  = # directed edges a→b
+  roots.forEach(r => { degree[r.id] = 0; outLinks[r.id] = {}; inLinks[r.id] = {} })
 
-  // Sort roots: put wider/taller containers first for visual anchor
-  const sorted=[...roots].sort((a,b)=>{
-    const ma=sizeCache[a.id], mb=sizeCache[b.id]
-    const areaA=ma.w*ma.h, areaB=mb.w*mb.h
-    return areaB-areaA
+  edges.forEach(e => {
+    const s = rootOf(e.source), t = rootOf(e.target)
+    if (!s || !t || s === t) return
+    if (!(s in degree) || !(t in degree)) return
+    outLinks[s][t] = (outLinks[s][t] || 0) + 1
+    inLinks[t][s]  = (inLinks[t][s]  || 0) + 1
+    degree[s] = (degree[s] || 0) + 1
+    degree[t] = (degree[t] || 0) + 1
   })
 
-  // Pack into rows greedily until row width exceeds targetW
-  const rowsOut=[[]]
-  let rowW=0
-  sorted.forEach(r=>{
-    const m=sizeCache[r.id]
-    if(rowW>0 && rowW+m.w+HGAP > targetW && rowsOut[rowsOut.length-1].length>0){
-      rowsOut.push([])
-      rowW=0
-    }
-    rowsOut[rowsOut.length-1].push(r)
-    rowW+=m.w+HGAP
-  })
+  // ── Topological rank (Kahn's BFS for DAG layers) ──────────
+  // Nodes with no incoming root-edges get rank 0; sinks get high rank
+  const inDeg = {}
+  roots.forEach(r => { inDeg[r.id] = Object.keys(inLinks[r.id] || {}).length })
 
-  // Place each row, centring rows relative to the widest row
-  const rowWidths=rowsOut.map(row=>row.reduce((s,r)=>s+sizeCache[r.id].w,0)+(row.length-1)*HGAP)
-  const maxRowW=Math.max(...rowWidths)
+  const rank = {}
+  const queue = roots.filter(r => inDeg[r.id] === 0).map(r => r.id)
+  queue.forEach(id => { rank[id] = 0 })
 
-  let cy=MARGIN
-  rowsOut.forEach((row,ri)=>{
-    const rw=rowWidths[ri]
-    let cx=MARGIN+(maxRowW-rw)/2   // centre-align each row
-    const rowH=Math.max(...row.map(r=>sizeCache[r.id].h))
-    row.forEach(r=>{
-      const m=sizeCache[r.id]
-      // Vertically centre shorter nodes within the tallest in the row
-      place(r.id, cx, cy + (rowH-m.h)/2)
-      cx+=m.w+HGAP
+  let head = 0
+  while (head < queue.length) {
+    const cur = queue[head++]
+    const neighbors = Object.keys(outLinks[cur] || {})
+    neighbors.forEach(nb => {
+      inDeg[nb] = (inDeg[nb] || 1) - 1
+      const newRank = (rank[cur] || 0) + 1
+      if (rank[nb] === undefined || rank[nb] < newRank) rank[nb] = newRank
+      if (inDeg[nb] === 0 && rank[nb] !== undefined) queue.push(nb)
     })
-    cy+=rowH+VGAP
+  }
+  // Any unranked nodes (cycles): assign by degree centrality
+  roots.forEach(r => { if (rank[r.id] === undefined) rank[r.id] = Math.round(degree[r.id] / 2) })
+
+  // ── Score each node — determines visual prominence ────────
+  // Hub score: many connections → gets more breathing room
+  // Source score: many outgoing → placed earlier (left/top)
+  function hubScore(id) {
+    return (degree[id] || 0)
+      + Object.values(outLinks[id] || {}).reduce((s, v) => s + v, 0) * 0.5
+      + Object.values(inLinks[id]  || {}).reduce((s, v) => s + v, 0) * 0.5
+  }
+
+  // ── Assign nodes to rank columns ──────────────────────────
+  const maxRank = Math.max(...roots.map(r => rank[r.id] || 0))
+
+  // Group roots by rank
+  const byRank = {}
+  roots.forEach(r => {
+    const rk = rank[r.id] || 0
+    ;(byRank[rk] || (byRank[rk] = [])).push(r)
   })
 
-  // Any orphaned nodes (safety net)
-  nodes.forEach(n=>{if(!n.w||!n.h){n.x=MARGIN;n.y=cy;n.w=NW;n.h=NH;cy+=NH+20}})
+  // Within each rank: sort by hubScore descending (hubs first → center of rank)
+  Object.values(byRank).forEach(group => {
+    group.sort((a, b) => hubScore(b.id) - hubScore(a.id))
+  })
+
+  // ── Decide layout orientation ──────────────────────────────
+  // If ranks span many columns → horizontal flow (left→right per rank)
+  // If few ranks, many nodes per rank → vertical flow (top→bottom per rank)
+  const numRanks = maxRank + 1
+  const maxPerRank = Math.max(...Object.values(byRank).map(g => g.length))
+  const useVertical = numRanks <= 2 && maxPerRank > 3  // many parallel nodes
+
+  const HGAP = 70, VGAP = 60, MARGIN = 80
+
+  if (useVertical) {
+    // ── VERTICAL FLOW: rank = row, nodes in rank = columns ──
+    // Hubs get extra margin from their neighbours
+    let cy = MARGIN
+    const rankKeys = Array.from({length: numRanks}, (_, i) => i)
+    rankKeys.forEach(rk => {
+      const group = byRank[rk] || []
+      if (!group.length) return
+      const rowH = Math.max(...group.map(r => sizeCache[r.id].h))
+      const totalW = group.reduce((s, r) => s + sizeCache[r.id].w, 0)
+        + (group.length - 1) * HGAP
+      let cx = MARGIN
+      group.forEach(r => {
+        const m = sizeCache[r.id]
+        const extraV = Math.min(hubScore(r.id) * 8, 40)
+        place(r.id, cx, cy + extraV + (rowH - m.h) / 2)
+        cx += m.w + HGAP
+      })
+      cy += rowH + VGAP
+    })
+  } else {
+    // ── HORIZONTAL FLOW: rank = column band, nodes stacked vertically ──
+    // Compute column X positions based on widest node in each rank
+    const colW = {}
+    roots.forEach(r => {
+      const rk = rank[r.id] || 0
+      colW[rk] = Math.max(colW[rk] || 0, sizeCache[r.id].w)
+    })
+
+    // X start of each column
+    const colX = {}
+    let cx = MARGIN
+    for (let rk = 0; rk <= maxRank; rk++) {
+      colX[rk] = cx
+      cx += (colW[rk] || NW) + HGAP
+    }
+
+    // Within each column: centre-stack nodes vertically
+    // Hubs get extra horizontal spacing (already handled by colW + gap)
+    const rankKeys = Array.from({length: numRanks}, (_, i) => i)
+    rankKeys.forEach(rk => {
+      const group = byRank[rk] || []
+      if (!group.length) return
+      const totalH = group.reduce((s, r) => s + sizeCache[r.id].h, 0)
+        + (group.length - 1) * VGAP
+      let cy = MARGIN
+      group.forEach(r => {
+        const m = sizeCache[r.id]
+        // Extra breathing room for hubs: push them to center of column
+        const extraH = Math.min(hubScore(r.id) * 6, 36)
+        place(r.id, colX[rk] + (colW[rk] - m.w) / 2, cy + extraH)
+        cy += m.h + VGAP + extraH * 0.5
+      })
+    })
+  }
+
+  // ── Post-pass: force-directed micro-adjustments ────────────
+  // 5 iterations of simple repulsion between root bounding boxes
+  // to smooth out any remaining overlaps without recomputing topology
+  const REPEL_ITERS = 6
+  for (let iter = 0; iter < REPEL_ITERS; iter++) {
+    let moved = false
+    for (let i = 0; i < roots.length; i++) {
+      for (let j = i + 1; j < roots.length; j++) {
+        const a = NM[roots[i].id], b = NM[roots[j].id]
+        const ma = sizeCache[a.id], mb = sizeCache[b.id]
+        const ax = a.x, ay = a.y, aw = ma.w, ah = ma.h
+        const bx = b.x, by = b.y, bw = mb.w, bh = mb.h
+        const overlapX = ax + aw + HGAP - bx
+        const overlapY = ay + ah + VGAP - by
+        if (overlapX > 0 && overlapY > 0 &&
+            bx + bw + HGAP > ax && by + bh + VGAP > ay) {
+          // Push apart on axis of least required movement
+          if (overlapX < overlapY) {
+            const shift = overlapX / 2
+            a.x -= shift; b.x += shift
+          } else {
+            const shift = overlapY / 2
+            a.y -= shift; b.y += shift
+          }
+          moved = true
+        }
+      }
+    }
+    if (!moved) break
+  }
+
+  // Clamp to positive coords
+  const minX = Math.min(...roots.map(r => NM[r.id].x))
+  const minY = Math.min(...roots.map(r => NM[r.id].y))
+  const shiftX = minX < MARGIN ? MARGIN - minX : 0
+  const shiftY = minY < MARGIN ? MARGIN - minY : 0
+  if (shiftX || shiftY) {
+    roots.forEach(r => {
+      const n = NM[r.id]
+      n.x += shiftX; n.y += shiftY
+      // cascade shift to children
+      const shiftKids = (pid) => {
+        nodes.filter(c => c.parent === pid).forEach(c => {
+          c.x += shiftX; c.y += shiftY
+          shiftKids(c.id)
+        })
+      }
+      shiftKids(r.id)
+    })
+  }
+
+  // Safety net: orphaned nodes
+  let fallbackY = (Math.max(...roots.map(r => NM[r.id].y + sizeCache[r.id].h)) || MARGIN) + VGAP
+  nodes.forEach(n => {
+    if (!n.w || !n.h) { n.x = MARGIN; n.y = fallbackY; n.w = NW; n.h = NH; fallbackY += NH + 20 }
+  })
   return nodes
 }
 
@@ -2693,7 +2830,7 @@ function parseAndRender(silent=false){
   const fatals=errors.filter(e=>e.t==='e')
   if(fatals.length&&!nodes.length){setStatus('err',`${fatals.length} error(s) — see below`);return}
   pushHistory(src)
-  S.nodes=autoLayout(nodes);S.edges=edges;S.sel=null
+  S.nodes=autoLayout(nodes,edges);S.edges=edges;S.sel=null
   render();setTimeout(fitToScreen,60)
   const warns=errors.filter(e=>e.t==='w').length
   setStatus(warns?'warn':'ok',`${nodes.length} entities · ${edges.length} connections${warns?` · ${warns} warning(s)`:''}`)
