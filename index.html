@@ -899,6 +899,10 @@ html,body{
       <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M5.5 1v7M2 6l3.5 3.5L9 6"/><path d="M1 10h9"/></svg>
       <span class="hbtn-text">Export</span>
     </button>
+    <button class="hbtn hbtn-keep" onclick="showAIPrompt()" title="Get AI prompt to generate DSL" style="gap:6px">
+      <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 1a4.5 4.5 0 100 9 4.5 4.5 0 000-9z"/><path d="M5.5 3.5v2.5l1.5 1"/></svg>
+      <span class="hbtn-text">AI Prompt</span>
+    </button>
     <button class="hbtn" onclick="fitToScreen()" title="Fit to screen (F)">
       <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 3.5V1h2.5M7.5 1H10v2.5M10 7.5V10H7.5M3.5 10H1V7.5"/></svg>
     </button>
@@ -3360,6 +3364,165 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape')closeAllSheets()
 },{capture:false})
 
+
+// ══════════════════════════════════════════════════════════
+// AI PROMPT GENERATOR
+// ══════════════════════════════════════════════════════════
+function buildAIPrompt(){
+  const nodeTypes = Object.entries(NT).map(([k,v])=>{
+    const kind = v.bound ? '(container — can hold children)' : '(leaf node)'
+    return `  ${k.padEnd(14)} ${kind}  →  renders as: ${v.l}`
+  }).join('\n')
+
+  const edgeTypes = Object.entries(ET).map(([k,v])=>`  ${k}`).join('\n')
+
+  return `You are an expert at writing architecture diagrams in ArcStudio DSL.
+
+━━ DSL SYNTAX ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. NODES — one per line:
+   type "Name"
+
+   Nesting (indentation = parent/child):
+   vm "My VM"
+     service "API"
+     database "DB"
+
+   The child is visually placed INSIDE the parent wall.
+   Only container types (marked below) can hold children.
+
+2. EDGES — connect any two named nodes:
+   "Source" -> "Target"
+   "Source" -> "Target" : edge_type
+
+3. COMMENTS — lines starting with #
+
+━━ NODE TYPES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+${nodeTypes}
+
+━━ EDGE TYPES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+${edgeTypes}
+
+━━ FULL EXAMPLE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Web Application Stack
+user "User"
+browser "Browser"
+
+region "AWS us-east-1"
+  k8s "EKS Cluster"
+    namespace "production"
+      service "API Gateway"
+      service "Auth Service"
+      service "Order Service"
+    namespace "data"
+      pod "Worker"
+  vm "Bastion Host"
+
+database "RDS Postgres"
+cache "ElastiCache Redis"
+queue "SQS Queue"
+external "Stripe API"
+
+"User" -> "Browser"
+"Browser" -> "API Gateway"
+"API Gateway" -> "Auth Service" : depends_on
+"API Gateway" -> "Order Service"
+"Order Service" -> "RDS Postgres" : stores_in
+"Order Service" -> "ElastiCache Redis" : reads_from
+"Order Service" -> "SQS Queue" : publishes_to
+"Worker" -> "SQS Queue" : consumes_from
+"Order Service" -> "Stripe API" : communicates
+
+━━ RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Node names must be unique
+- Edges reference names with "quotes" exactly as defined
+- Indentation must be consistent (2 or 4 spaces)
+- Container types with no children render as leaf nodes
+- Unknown types render as generic components (no error)
+- Edge type defaults to "communicates" if omitted
+
+━━ YOUR TASK ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Write a complete ArcStudio DSL diagram for the following architecture:
+
+[DESCRIBE YOUR ARCHITECTURE HERE]
+
+Output ONLY the DSL — no explanation, no markdown fences, no commentary.`.replace('${nodeTypes}', nodeTypes).replace('${edgeTypes}', edgeTypes)
+}
+
+function showAIPrompt(){
+  const modal=document.getElementById('ai-prompt-modal')
+  const box=document.getElementById('ai-prompt-text')
+  box.textContent=buildAIPrompt()
+  modal.classList.remove('hidden')
+}
+
+function closeAIPrompt(){
+  document.getElementById('ai-prompt-modal').classList.add('hidden')
+}
+
+function selectAIPrompt(el){
+  const range=document.createRange()
+  range.selectNodeContents(el)
+  const sel=window.getSelection()
+  sel.removeAllRanges()
+  sel.addRange(range)
+}
+
+async function copyAIPrompt(){
+  const text=document.getElementById('ai-prompt-text').textContent
+  const btn=document.getElementById('ai-copy-btn')
+  try{
+    await navigator.clipboard.writeText(text)
+    btn.innerHTML='<svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 6l3 3 5-5"/></svg> Copied!'
+    btn.style.background='linear-gradient(135deg,#0d5c3a,#0e6b44)'
+    setTimeout(()=>{
+      btn.innerHTML='<svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="4" y="4" width="6" height="6" rx="1.5"/><path d="M1 7V1.5A.5.5 0 011.5 1H7"/></svg> Copy Prompt'
+      btn.style.background=''
+    },2200)
+  }catch{
+    selectAIPrompt(document.getElementById('ai-prompt-text'))
+    showToast('Selected all — press Ctrl+C to copy','warn')
+  }
+}
+
 </script>
+
+<!-- ─── AI Prompt Modal ──────────────────────────────────── -->
+<div class="overlay hidden" id="ai-prompt-modal" onclick="if(event.target===this)closeAIPrompt()">
+  <div class="modal modal-wide" onclick="event.stopPropagation()">
+    <div class="mh">
+      <div class="mh-ico">✦</div>
+      <div class="mh-text">
+        <div class="mh-title">AI Architecture Prompt</div>
+        <div class="mh-sub">Copy this prompt into any AI assistant — it knows the full DSL syntax and will write architecture diagrams for you.</div>
+      </div>
+      <button class="mbtn sec" onclick="closeAIPrompt()" style="padding:0 10px;height:30px;font-size:11px">✕</button>
+    </div>
+    <div class="mbody" style="padding:16px 24px 20px">
+      <div style="font-size:9.5px;font-weight:700;color:var(--text-m);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Prompt</div>
+      <div id="ai-prompt-text" onclick="selectAIPrompt(this)" style="
+        background:var(--surface);border:1px solid var(--border2);border-radius:var(--r-lg);
+        padding:14px 16px;font:11.5px/1.8 'JetBrains Mono',monospace;
+        color:var(--text);white-space:pre-wrap;word-break:break-word;
+        max-height:340px;overflow-y:auto;cursor:text;
+        transition:border-color .15s;
+      "></div>
+      <div style="margin-top:8px;font-size:10px;color:var(--text-m)">Click the box to select all • then Ctrl+C / ⌘C to copy</div>
+    </div>
+    <div class="mfooter">
+      <button class="mbtn sec" onclick="closeAIPrompt()">Close</button>
+      <button class="mbtn pri" onclick="copyAIPrompt()" id="ai-copy-btn">
+        <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="4" y="4" width="6" height="6" rx="1.5"/><path d="M1 7V1.5A.5.5 0 011.5 1H7"/></svg>
+        Copy Prompt
+      </button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

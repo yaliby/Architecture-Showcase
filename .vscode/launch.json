@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "chrome",
+            "request": "launch",
+            "name": "Open ArchitectureShowcase.html",
+            "file": "e:\\Downloads\\Arcitecture\\ArchitectureShowcase.html",
+            "runtimeExecutable": "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+            "userDataDir": "e:\\Downloads\\Arcitecture\\.vscode\\brave-profile"
+        }
+    ]
+}
