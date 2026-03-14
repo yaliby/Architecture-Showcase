@@ -2381,122 +2381,7 @@ function startDrag(id,e){
   renderInsp()
 }
 
-// ══════════════════════════════════════════════════════════
-// INVARIANT ENFORCER
-// Guarantees after every mutation:
-//   R1. Every node is fully inside its parent wall (if it has one)
-//   R2. No two nodes at the same tree level overlap each other
-//   R3. Every wall has valid minimum dimensions
-// ══════════════════════════════════════════════════════════
 
-// Depth of node in tree (root = 0)
-function depthOf(n, NM){
-  let d=0, cur=n
-  while(cur && cur.parent){ d++; cur=NM[cur.parent]||null }
-  return d
-}
-
-// Bounding rect of a node {x,y,w,h}
-function nodeRect(n){ return{x:n.x, y:n.y, w:n.w||NW, h:n.h||NH} }
-
-// Push node B out of node A (A is stable). Returns new {x,y} for B.
-// Pushes on the axis of least penetration.
-function pushOut(ax,ay,aw,ah, bx,by,bw,bh){
-  const penL=(bx+bw)-ax, penR=(ax+aw)-bx
-  const penT=(by+bh)-ay, penB=(ay+ah)-by
-  const m=Math.min(penL,penR,penT,penB)
-  if(m===penL) return{x:ax-bw,    y:by}
-  if(m===penR) return{x:ax+aw,    y:by}
-  if(m===penT) return{x:bx,       y:ay-bh}
-  return            {x:bx,        y:ay+ah}
-}
-
-function enforceInvariants(){
-  const NM=getNM()
-
-  // ── R3: walls must have valid minimum size ───────────────────
-  const MIN_W=NW+2*WALL_PAD_X, MIN_H=WALL_PAD_TOP+NH+WALL_PAD_BOT
-  S.nodes.filter(n=>n.isBound).forEach(n=>{
-    let changed=false
-    if((n.w||0)<MIN_W){ n.w=MIN_W; changed=true }
-    if((n.h||0)<MIN_H){ n.h=MIN_H; changed=true }
-    if(changed){
-      const el=document.getElementById('nd-'+n.id)
-      if(el){el.style.width=n.w+'px'; el.style.height=n.h+'px'}
-    }
-  })
-
-  // ── R1: every node inside its parent wall ───────────────────
-  // Process shallowest-first so a corrected parent stays valid
-  const byDepth=[...S.nodes].sort((a,b)=>depthOf(a,NM)-depthOf(b,NM))
-  byDepth.forEach(n=>{
-    if(!n.parent) return
-    const par=NM[n.parent]; if(!par||!par.isBound) return
-    const nw=n.w||NW, nh=n.h||NH
-    const c=clampInsideWall(n.x,n.y,nw,nh,par)
-    if(c.x===n.x&&c.y===n.y) return
-    const dx=c.x-n.x, dy=c.y-n.y
-    n.x=c.x; n.y=c.y; _domMove(n.id,n.x,n.y)
-    cascadeShift(n.id,dx,dy,NM)
-  })
-
-  // ── R2: no two nodes at the same level overlap ───────────────
-  // Group all nodes by their parent key ('__root__' for top-level).
-  // Within each group: walls are "anchors" (pushed last), leaf nodes
-  // are pushed away first, then remaining overlaps between walls resolved.
-  // Up to 6 passes per group until stable.
-  const groups={}
-  S.nodes.forEach(n=>{
-    const key=n.parent||'__root__'
-    if(!groups[key]) groups[key]=[]
-    groups[key].push(n)
-  })
-
-  Object.values(groups).forEach(group=>{
-    if(group.length<2) return
-    for(let pass=0;pass<6;pass++){
-      let anyMoved=false
-      // Compare every pair
-      for(let i=0;i<group.length;i++){
-        for(let j=i+1;j<group.length;j++){
-          const a=group[i], b=group[j]
-          const ra=nodeRect(a), rb=nodeRect(b)
-          if(!rectsOverlap(ra,rb)) continue
-          // Decide who moves: walls are more stable than leaves
-          // If both are walls or both are leaves, push the second one (j)
-          const moveB = !a.isBound || b.isBound  // a wall beats a leaf; ties go to j
-          const mover = moveB ? b : a
-          const anchor= moveB ? a : b
-          const mr=nodeRect(mover)
-          const p=pushOut(anchor.x,anchor.y,anchor.w||NW,anchor.h||NH,
-                          mr.x,mr.y,mr.w,mr.h)
-          let nx=p.x, ny=p.y
-          // Re-clamp inside parent wall
-          if(mover.parent){
-            const par=NM[mover.parent]
-            if(par){ const c=clampInsideWall(nx,ny,mr.w,mr.h,par); nx=c.x; ny=c.y }
-          }
-          const dx=nx-mover.x, dy=ny-mover.y
-          if(!dx&&!dy) continue
-          mover.x=nx; mover.y=ny; _domMove(mover.id,mover.x,mover.y)
-          cascadeShift(mover.id,dx,dy,NM)
-          anyMoved=true
-        }
-      }
-      if(!anyMoved) break
-    }
-  })
-}
-
-// Fast DOM position update without full re-render
-function _domMove(id, x, y){
-  const el=document.getElementById('nd-'+id)
-  if(el){el.style.left=x+'px'; el.style.top=y+'px'}
-}
-
-// Aliases kept for call-sites that use old names
-function moveOne(id,dx,dy,NM,applyClamp){return shiftNode(id,dx,dy,NM,applyClamp)}
-function moveAll(id,dx,dy){shiftNode(id,dx,dy,null,true)}
 
 function clearDragStyles(){
   document.querySelectorAll('.being-dragged,.drag-parent').forEach(el=>{
@@ -2831,6 +2716,7 @@ function parseAndRender(silent=false){
   if(fatals.length&&!nodes.length){setStatus('err',`${fatals.length} error(s) — see below`);return}
   pushHistory(src)
   S.nodes=autoLayout(nodes,edges);S.edges=edges;S.sel=null
+  enforceInvariants()
   render();setTimeout(fitToScreen,60)
   const warns=errors.filter(e=>e.t==='w').length
   setStatus(warns?'warn':'ok',`${nodes.length} entities · ${edges.length} connections${warns?` · ${warns} warning(s)`:''}`)
