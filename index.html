@@ -2552,15 +2552,17 @@ document.addEventListener('mousemove',e=>{
     })
 
     // ── SIBLING WALLS: moving edge stops at sibling boundary ──
-    // Only block if sibling overlaps on the perpendicular (stable) axis
+    // Only block if sibling overlaps on the perpendicular (stable) axis.
+    // Never let the clamp break the opposite (frozen) edge.
     S.nodes.filter(s=>s.id!==n.id && s.isBound && (s.parent||null)===(n.parent||null)).forEach(s=>{
       const sL=s.x, sR=s.x+s.w, sT=s.y, sB=s.y+s.h
       const vOverlap=T < sB-1 && B > sT+1
       const hOverlap=L < sR-1 && R > sL+1
-      if(d.includes('e') && vOverlap) R=Math.min(R, Math.max(L+MIN_W, sL))
-      if(d.includes('s') && hOverlap) B=Math.min(B, Math.max(T+MIN_H, sT))
-      if(d.includes('w') && vOverlap) L=Math.max(L, Math.min(R-MIN_W, sR))
-      if(d.includes('n') && hOverlap) T=Math.max(T, Math.min(B-MIN_H, sB))
+      // Stop the moving edge at the sibling face — frozen edge never changes
+      if(d.includes('e') && vOverlap && R>sL) R=Math.max(sL, L+MIN_W)
+      if(d.includes('s') && hOverlap && B>sT) B=Math.max(sT, T+MIN_H)
+      if(d.includes('w') && vOverlap && L<sR) L=Math.min(sR, R-MIN_W)
+      if(d.includes('n') && hOverlap && T<sB) T=Math.min(sB, B-MIN_H)
     })
 
     // ── PARENT WALL: grow parent if child pushes past its inner edge ──
