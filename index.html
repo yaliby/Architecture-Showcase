@@ -2540,32 +2540,16 @@ document.addEventListener('mousemove',e=>{
       }
     }
 
-    // 5. Hard-clamp against sibling walls (Rule 3 — no overlap ever)
-    // For each sibling wall, limit the growing edges so they can't cross into it.
+    // 5. Stop at sibling walls — can't grow into them
     S.nodes.filter(s=>
       s.id!==n.id && s.isBound &&
       (s.parent||null)===(n.parent||null)
     ).forEach(s=>{
-      // Which edges of n are moving toward s?
-      if(d.includes('e') && nx<s.x && nx+nw>s.x)       nw=s.x-nx          // right edge hits s left
-      if(d.includes('s') && ny<s.y && ny+nh>s.y)        nh=s.y-ny          // bottom edge hits s top
-      if(d.includes('w') && s.x+s.w>nx && s.x+s.w<r.ox+r.ow){ nx=s.x+s.w; nw=r.ox+r.ow-nx } // left edge hits s right
-      if(d.includes('n') && s.y+s.h>ny && s.y+s.h<r.oy+r.oh){ ny=s.y+s.h; nh=r.oy+r.oh-ny } // top edge hits s bottom
-      // Also handle overlap in the non-resizing axis: if n already overlaps s
-      // horizontally/vertically, block entirely on the growing axis
-      const overlapX=nx<s.x+s.w && nx+nw>s.x
-      const overlapY=ny<s.y+s.h && ny+nh>s.y
-      if(overlapX&&overlapY){
-        // Still overlapping after axis clamp — use minimum penetration to resolve
-        const penE=nx+nw-s.x, penW=s.x+s.w-nx, penS=ny+nh-s.y, penN=s.y+s.h-ny
-        if(d.includes('e')&&penE>0) nw-=penE
-        if(d.includes('s')&&penS>0) nh-=penS
-        if(d.includes('w')&&penW>0){ nw-=penW; nx+=penW }
-        if(d.includes('n')&&penN>0){ nh-=penN; ny+=penN }
-      }
+      if(d.includes('e') && nx+nw > s.x && ny<s.y+s.h && ny+nh>s.y) nw=s.x-nx
+      if(d.includes('s') && ny+nh > s.y && nx<s.x+s.w && nx+nw>s.x) nh=s.y-ny
+      if(d.includes('w') && nx < s.x+s.w && ny<s.y+s.h && ny+nh>s.y){ const stop=s.x+s.w; nw=r.ox+r.ow-stop; nx=stop }
+      if(d.includes('n') && ny < s.y+s.h && nx<s.x+s.w && nx+nw>s.x){ const stop=s.y+s.h; nh=r.oy+r.oh-stop; ny=stop }
     })
-
-    // Re-enforce min size after sibling clamp
     if(nw<MIN_W){ nw=MIN_W; if(d.includes('w')) nx=r.ox+r.ow-nw }
     if(nh<MIN_H){ nh=MIN_H; if(d.includes('n')) ny=r.oy+r.oh-nh }
 
