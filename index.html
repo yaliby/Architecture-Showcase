@@ -2543,28 +2543,42 @@ document.addEventListener('mousemove',e=>{
     if(d.includes('s')) S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ B=Math.max(B, c.y+(c.h||NH)+WALL_PAD_BOT) })
 
     // ── 4. Sibling wall stop — each moving edge stops at sibling boundary ──
-    // A sibling only blocks a moving edge if it overlaps in the OTHER (stable) axis.
-    // Use the STABLE edges (frozen from snapshot) for the other-axis check.
-    const stableT=r.oy, stableB=r.oy+r.oh, stableL=r.ox, stableR=r.ox+r.ow
+    // Use current (post-clamp) edges for the stable-axis overlap check.
     S.nodes.filter(s=>s.id!==n.id && s.isBound && (s.parent||null)===(n.parent||null)).forEach(s=>{
       const sL=s.x, sR=s.x+s.w, sT=s.y, sB=s.y+s.h
-      // Check stable axis overlap (1px margin to avoid false triggers on touching walls)
-      const vOverlap = stableT < sB-1 && stableB > sT+1
-      const hOverlap = stableL < sR-1 && stableR > sL+1
+      // Stable axis = the axis NOT being dragged. Use current frozen edges.
+      const vOverlap = T < sB-1 && B > sT+1   // vertical overlap (for e/w moves)
+      const hOverlap = L < sR-1 && R > sL+1   // horizontal overlap (for n/s moves)
       if(d.includes('e') && vOverlap && R > sL) R = Math.max(L+MIN_W, sL)
       if(d.includes('s') && hOverlap && B > sT) B = Math.max(T+MIN_H, sT)
       if(d.includes('w') && vOverlap && L < sR) L = Math.min(R-MIN_W, sR)
       if(d.includes('n') && hOverlap && T < sB) T = Math.min(B-MIN_H, sB)
     })
 
-    // ── 5. Parent wall: clamp to parent inner rect — no escaping ──
+    // ── 5. Parent wall ────────────────────────────────────────────
+    // If child touches parent inner boundary: grow parent (no gap between them).
+    // If gap exists or no parent: clamp to parent inner rect.
     if(n.parent){
       const par=NM[n.parent]; if(par){
         const pr=wallRect(par)
-        if(d.includes('e')) R=Math.min(R, pr.x2)
-        if(d.includes('s')) B=Math.min(B, pr.y2)
-        if(d.includes('w')) L=Math.max(L, pr.x1)
-        if(d.includes('n')) T=Math.max(T, pr.y1)
+        const GAP=2  // px — if closer than this, considered "touching"
+
+        if(d.includes('e')){
+          if(R > pr.x2-GAP){ par.w+=R-pr.x2; _domWall(par); r.ow=r.ow+(R-pr.x2); }  // grow right
+          else R=Math.min(R, pr.x2)
+        }
+        if(d.includes('s')){
+          if(B > pr.y2-GAP){ par.h+=B-pr.y2; _domWall(par); r.oh=r.oh+(B-pr.y2); }  // grow bottom
+          else B=Math.min(B, pr.y2)
+        }
+        if(d.includes('w')){
+          if(L < pr.x1+GAP){ const g=pr.x1-L; par.x-=g; par.w+=g; _domWall(par); r.ox=r.ox-g; r.ow=r.ow+g; }
+          else L=Math.max(L, pr.x1)
+        }
+        if(d.includes('n')){
+          if(T < pr.y1+GAP){ const g=pr.y1-T; par.y-=g; par.h+=g; _domWall(par); r.oy=r.oy-g; r.oh=r.oh+g; }
+          else T=Math.max(T, pr.y1)
+        }
       }
     }
 
