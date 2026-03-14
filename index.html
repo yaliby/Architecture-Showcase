@@ -2198,6 +2198,12 @@ function _domMove(id, x, y){
   if(el){el.style.left=x+'px'; el.style.top=y+'px'}
 }
 
+// Fast DOM wall (position + size) update
+function _domWall(n){
+  const el=document.getElementById('nd-'+n.id)
+  if(el){el.style.left=n.x+'px'; el.style.top=n.y+'px'; el.style.width=n.w+'px'; el.style.height=n.h+'px'}
+}
+
 // ── enforceInvariants ────────────────────────────────────────
 // The safety net: call after every mutation to fix any violations.
 function enforceInvariants(){
@@ -2520,62 +2526,102 @@ document.addEventListener('mousemove',e=>{
     const rawDx=(e.clientX-r.lx)/S.zoom, rawDy=(e.clientY-r.ly)/S.zoom
     const d=r.dir
 
-    // 1. Candidate geometry from original snapshot (no drift)
-    let nx=r.ox, ny=r.oy, nw=r.ow, nh=r.oh
-    if(d.includes('e')) nw=r.ow+rawDx
-    if(d.includes('s')) nh=r.oh+rawDy
-    if(d.includes('w')){ nw=r.ow-rawDx; nx=r.ox+r.ow-nw }
-    if(d.includes('n')){ nh=r.oh-rawDy; ny=r.oy+r.oh-nh }
-
-    // 2. Absolute minimum size
+    // Work in terms of 4 edges. Fixed edges come from snapshot; moving edges from mouse.
+    // This way nothing ever drifts and shape only changes on the axis being dragged.
     const MIN_W=NW+2*WALL_PAD_X, MIN_H=WALL_PAD_TOP+NH+WALL_PAD_BOT
-    if(nw<MIN_W){ nw=MIN_W; if(d.includes('w')) nx=r.ox+r.ow-nw }
-    if(nh<MIN_H){ nh=MIN_H; if(d.includes('n')) ny=r.oy+r.oh-nh }
 
-    // 3. Can't shrink so children fall outside
-    const shiftX=nx-n.x, shiftY=ny-n.y
-    S.nodes.filter(c=>c.parent===n.id).forEach(c=>{
-      const cx=c.x+shiftX, cy=c.y+shiftY, cw=c.w||NW, ch=c.h||NH
-      const needW=(cx-nx)+cw+WALL_PAD_X
-      const needH=(cy-ny)+ch+WALL_PAD_BOT
-      if(nw<needW){ nw=needW; if(d.includes('w')) nx=r.ox+r.ow-nw }
-      if(nh<needH){ nh=needH; if(d.includes('n')) ny=r.oy+r.oh-nh }
+    // Fixed edges (opposite side from the drag handle — never touch these)
+    const fixedL = r.ox            // used when dragging e/se/ne
+    const fixedR = r.ox+r.ow       // used when dragging w/sw/nw
+    const fixedT = r.oy            // used when dragging s/se/sw
+    const fixedB = r.oy+r.oh       // used when dragging n/ne/nw
+
+    // Moving edges — raw from mouse, will be clamped below
+    let edgeR = d.includes('e') ? r.ox+r.ow+rawDx : fixedR
+    let edgeB = d.includes('s') ? r.oy+r.oh+rawDy : fixedB
+    let edgeL = d.includes('w') ? r.ox+rawDx       : fixedL
+    let edgeT = d.includes('n') ? r.oy+rawDy       : fixedT
+
+    // ── Clamp each MOVING edge independently ──────────────────
+
+    // Floor: can't be smaller than MIN, can't expose children
+    // Children floor for right/bottom (they don't move when right/bottom shrinks)
+    if(d.includes('e')){
+      let floor=fixedL+MIN_W
+      S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ floor=Math.max(floor, c.x+(c.w||NW)+WALL_PAD_X) })
+      edgeR=Math.max(edgeR, floor)
+    }
+    if(d.includes('s')){
+      let floor=fixedT+MIN_H
+      S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ floor=Math.max(floor, c.y+(c.h||NH)+WALL_PAD_BOT) })
+      edgeB=Math.max(edgeB, floor)
+    }
+    // Children floor for left/top (children shift WITH the edge, so floor is relative)
+    if(d.includes('w')){
+      let ceil=fixedR-MIN_W
+      S.nodes.filter(c=>c.parent===n.id).forEach(c=>{
+        // child will shift by (edgeL - n.x), so its new right edge = c.x+(edgeL-n.x)+(c.w)
+        // We need: edgeL + WALL_PAD_X <= c.x+(edgeL-n.x) → always true
+        // We need: c.x+(edgeL-n.x)+(c.w) <= edgeR-WALL_PAD_X
+        // → edgeL <= n.x + (edgeR-WALL_PAD_X - c.x - cw)  → handled by edgeR floor above
+        // What matters: edgeL can't be so far right that child sticks out right
+        const cRight = c.x+(c.w||NW)  // child's right in current coords
+        ceil=Math.min(ceil, cRight-WALL_PAD_X + (fixedR-r.ox-r.ow) ) // simplification: just limit
+      })
+      edgeL=Math.min(edgeL, ceil)
+    }
+    if(d.includes('n')){
+      let ceil=fixedB-MIN_H
+      edgeT=Math.min(edgeT, ceil)
+    }
+
+    // Sibling wall clamp — ONLY clamp the moving edge, fixed edges never move
+    const siblings=S.nodes.filter(s=>s.id!==n.id && s.isBound && (s.parent||null)===(n.parent||null))
+    siblings.forEach(s=>{
+      // Only clamp if there's actual overlap in the OTHER axis (the non-moving one)
+      // We check with the FINAL (post-clamp) values on the stable axis
+      const overlapV = edgeT < s.y+s.h && edgeB > s.y   // vertical overlap
+      const overlapH = edgeL < s.x+s.w && edgeR > s.x   // horizontal overlap
+
+      if(d.includes('e') && overlapV && edgeR > s.x)  edgeR = Math.max(fixedL+MIN_W, s.x)
+      if(d.includes('s') && overlapH && edgeB > s.y)  edgeB = Math.max(fixedT+MIN_H, s.y)
+      if(d.includes('w') && overlapV && edgeL < s.x+s.w) edgeL = Math.min(fixedR-MIN_W, s.x+s.w)
+      if(d.includes('n') && overlapH && edgeT < s.y+s.h) edgeT = Math.min(fixedB-MIN_H, s.y+s.h)
     })
 
-    // 4. If inside a parent wall: grow it too when we hit its inner edge
+    // Parent wall: grow parent if child hits its inner boundary
     if(n.parent){
       const par=NM[n.parent]
       if(par){
         const pr=wallRect(par)
-        // Growing right → parent right edge needs to accommodate
-        if(d.includes('e') && nx+nw > pr.x2){ par.w+=(nx+nw-pr.x2); const pel=document.getElementById('nd-'+par.id); if(pel) pel.style.width=par.w+'px' }
-        // Growing down → parent bottom edge
-        if(d.includes('s') && ny+nh > pr.y2){ par.h+=(ny+nh-pr.y2); const pel=document.getElementById('nd-'+par.id); if(pel) pel.style.height=par.h+'px' }
-        // Growing left → parent left edge
-        if(d.includes('w') && nx < pr.x1){ const grow=pr.x1-nx; par.x-=grow; par.w+=grow; const pel=document.getElementById('nd-'+par.id); if(pel){pel.style.left=par.x+'px';pel.style.width=par.w+'px'} cascadeShift(par.id,-grow,0,NM) }
-        // Growing up → parent top edge
-        if(d.includes('n') && ny < pr.y1){ const grow=pr.y1-ny; par.y-=grow; par.h+=grow; const pel=document.getElementById('nd-'+par.id); if(pel){pel.style.top=par.y+'px';pel.style.height=par.h+'px'} cascadeShift(par.id,0,-grow,NM) }
+        if(d.includes('e') && edgeR > pr.x2){ par.w+=edgeR-pr.x2; _domWall(par) }
+        if(d.includes('s') && edgeB > pr.y2){ par.h+=edgeB-pr.y2; _domWall(par) }
+        if(d.includes('w') && edgeL < pr.x1){
+          const g=pr.x1-edgeL; par.x-=g; par.w+=g; _domWall(par)
+          // shift all OTHER children of parent (not n) so they don't move visually
+          S.nodes.filter(c=>c.parent===par.id&&c.id!==n.id).forEach(c=>{
+            c.x-=g; _domMove(c.id,c.x,c.y); cascadeShift(c.id,-g,0,NM)
+          })
+        }
+        if(d.includes('n') && edgeT < pr.y1){
+          const g=pr.y1-edgeT; par.y-=g; par.h+=g; _domWall(par)
+          S.nodes.filter(c=>c.parent===par.id&&c.id!==n.id).forEach(c=>{
+            c.y-=g; _domMove(c.id,c.x,c.y); cascadeShift(c.id,0,-g,NM)
+          })
+        }
       }
     }
 
-    // 5. Stop at sibling walls — only clamp the moving edge, shape stays intact
-    S.nodes.filter(s=>s.id!==n.id && s.isBound && (s.parent||null)===(n.parent||null)).forEach(s=>{
-      if(d.includes('e') && nx+nw > s.x && ny<s.y+s.h-1 && ny+nh>s.y+1) nw=Math.max(MIN_W, s.x-nx)
-      if(d.includes('s') && ny+nh > s.y && nx<s.x+s.w-1 && nx+nw>s.x+1) nh=Math.max(MIN_H, s.y-ny)
-      if(d.includes('w') && nx < s.x+s.w && ny<s.y+s.h-1 && ny+nh>s.y+1){ nx=s.x+s.w; nw=r.ox+r.ow-nx; nw=Math.max(MIN_W,nw) }
-      if(d.includes('n') && ny < s.y+s.h && nx<s.x+s.w-1 && nx+nw>s.x+1){ ny=s.y+s.h; nh=r.oy+r.oh-ny; nh=Math.max(MIN_H,nh) }
-    })
+    // ── Derive final x,y,w,h from clamped edges ────────────────
+    const nx=edgeL, ny=edgeT, nw=edgeR-edgeL, nh=edgeB-edgeT
 
-    // 6. Apply wall geometry
+    // ── Apply ──────────────────────────────────────────────────
     const cdx=nx-n.x, cdy=ny-n.y
     n.x=nx; n.y=ny; n.w=nw; n.h=nh
     const el=document.getElementById('nd-'+r.id)
     if(el){el.style.left=nx+'px'; el.style.top=ny+'px'; el.style.width=nw+'px'; el.style.height=nh+'px'}
+    if(cdx||cdy) cascadeShift(n.id, cdx, cdy, NM)
 
-    // 7. Shift children by TL delta
-    if(cdx!==0||cdy!==0) cascadeShift(n.id, cdx, cdy, NM)
-
-    // 8. enforceInvariants as final safety net
     enforceInvariants()
     renderEdges(); updateMinimap(); return
   }
