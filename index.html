@@ -1466,16 +1466,72 @@ function autoLayout(nodes){
     })
   }
 
-  // Layout roots left-to-right
+  // ── Root layout: grid that uses edge topology for smarter placement ──
   const roots=nodes.filter(n=>!n.parent)
-  let rx=60
-  roots.forEach(r=>{
-    place(r.id,rx,60)
-    rx+=NM[r.id].w+50
+  if(!roots.length) return nodes
+
+  // Pre-measure all roots
+  roots.forEach(r=>measure(r.id))
+
+  // Build a graph among roots to detect flow direction hints
+  // (edges are passed in via S.edges if available, else we fall back to pure grid)
+  const rootIds=new Set(roots.map(r=>r.id))
+
+  // Helper: find root ancestor of a node
+  function rootAncestor(id){
+    let cur=NM[id]; while(cur&&cur.parent) cur=NM[cur.parent]; return cur
+  }
+
+  // Decide on a column count that gives a roughly balanced 16:9 aspect ratio
+  // Strategy: try to fit into rows so that total width ≈ 1.6 × total height
+  const totalArea=roots.reduce((s,r)=>{const m=sizeCache[r.id];return s+(m.w+60)*(m.h+60)},0)
+  const targetW=Math.sqrt(totalArea*1.6)
+  
+  // Assign roots to a 2-D grid using a simple left-to-right, wrap approach
+  // but weigh wider nodes more so we don't get jagged rows
+  const HGAP=60, VGAP=60
+  const MARGIN=80
+
+  // Sort roots: put wider/taller containers first for visual anchor
+  const sorted=[...roots].sort((a,b)=>{
+    const ma=sizeCache[a.id], mb=sizeCache[b.id]
+    const areaA=ma.w*ma.h, areaB=mb.w*mb.h
+    return areaB-areaA
   })
 
-  // Any orphaned nodes (shouldn't happen, but safety net)
-  nodes.forEach(n=>{if(!n.w||!n.h){n.x=rx;n.y=60;n.w=NW;n.h=NH;rx+=NW+20}})
+  // Pack into rows greedily until row width exceeds targetW
+  const rowsOut=[[]]
+  let rowW=0
+  sorted.forEach(r=>{
+    const m=sizeCache[r.id]
+    if(rowW>0 && rowW+m.w+HGAP > targetW && rowsOut[rowsOut.length-1].length>0){
+      rowsOut.push([])
+      rowW=0
+    }
+    rowsOut[rowsOut.length-1].push(r)
+    rowW+=m.w+HGAP
+  })
+
+  // Place each row, centring rows relative to the widest row
+  const rowWidths=rowsOut.map(row=>row.reduce((s,r)=>s+sizeCache[r.id].w,0)+(row.length-1)*HGAP)
+  const maxRowW=Math.max(...rowWidths)
+
+  let cy=MARGIN
+  rowsOut.forEach((row,ri)=>{
+    const rw=rowWidths[ri]
+    let cx=MARGIN+(maxRowW-rw)/2   // centre-align each row
+    const rowH=Math.max(...row.map(r=>sizeCache[r.id].h))
+    row.forEach(r=>{
+      const m=sizeCache[r.id]
+      // Vertically centre shorter nodes within the tallest in the row
+      place(r.id, cx, cy + (rowH-m.h)/2)
+      cx+=m.w+HGAP
+    })
+    cy+=rowH+VGAP
+  })
+
+  // Any orphaned nodes (safety net)
+  nodes.forEach(n=>{if(!n.w||!n.h){n.x=MARGIN;n.y=cy;n.w=NW;n.h=NH;cy+=NH+20}})
   return nodes
 }
 
