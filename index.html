@@ -2544,23 +2544,10 @@ document.addEventListener('mousemove',e=>{
     if(d.includes('w')) L=Math.min(L, R-MIN_W)
     if(d.includes('n')) T=Math.min(T, B-MIN_H)
 
-    // ── 3. Children floor (only for shrink — can't expose children) ──
-    // Right/Bottom edges: children stay put, so just check their extents
+    // ── 3. Children floor — can't shrink R/B past children extents ──
+    // L/T edges shift children WITH them, so no floor needed there.
     if(d.includes('e')) S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ R=Math.max(R, c.x+(c.w||NW)+WALL_PAD_X) })
     if(d.includes('s')) S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ B=Math.max(B, c.y+(c.h||NH)+WALL_PAD_BOT) })
-    // Left/Top edges: children shift WITH the edge by delta=(newL-n.x)
-    // So child's new x = c.x + (L - n.x). We need that new x >= L+WALL_PAD_X.
-    // → c.x + L - n.x >= L + WALL_PAD_X → c.x - n.x >= WALL_PAD_X → always true (layout guarantees it)
-    // We DO need: child's new right = c.x+(L-n.x)+(c.w) <= R-WALL_PAD_X
-    // → L <= n.x + R - WALL_PAD_X - c.x - c.w  (only matters if we're shrinking AND the child is wide)
-    if(d.includes('w')) S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ L=Math.min(L, c.x+(c.w||NW)-(R-n.x-r.ow)+n.x-(c.w||NW)) })
-    if(d.includes('n')) S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ T=Math.min(T, c.y+(c.h||NH)-(B-n.y-r.oh)+n.y-(c.h||NH)) })
-
-    // Re-enforce minimum after child floor
-    if(d.includes('e')) R=Math.max(R, L+MIN_W)
-    if(d.includes('s')) B=Math.max(B, T+MIN_H)
-    if(d.includes('w')) L=Math.min(L, R-MIN_W)
-    if(d.includes('n')) T=Math.min(T, B-MIN_H)
 
     // ── 4. Sibling wall stop — each moving edge stops at sibling boundary ──
     // A sibling only blocks a moving edge if it overlaps in the OTHER (stable) axis.
@@ -2578,22 +2565,14 @@ document.addEventListener('mousemove',e=>{
     })
 
     // ── 5. Parent wall: grow parent if this child pushes past its inner edge ──
-    // Only grow, never shrink. Only on the moving axis.
+    // Grow the parent's outer shell only. Siblings stay at their world coords — no shift.
     if(n.parent){
       const par=NM[n.parent]; if(par){
-        const pr=wallRect(par) // {x1,y1,x2,y2} inner rect
+        const pr=wallRect(par)
         if(d.includes('e') && R > pr.x2){ par.w += R-pr.x2; _domWall(par) }
         if(d.includes('s') && B > pr.y2){ par.h += B-pr.y2; _domWall(par) }
-        if(d.includes('w') && L < pr.x1){
-          const g=pr.x1-L
-          par.x-=g; par.w+=g; _domWall(par)
-          S.nodes.filter(c=>c.parent===par.id&&c.id!==n.id).forEach(c=>{ c.x-=g; _domMove(c.id,c.x,c.y); cascadeShift(c.id,-g,0,NM) })
-        }
-        if(d.includes('n') && T < pr.y1){
-          const g=pr.y1-T
-          par.y-=g; par.h+=g; _domWall(par)
-          S.nodes.filter(c=>c.parent===par.id&&c.id!==n.id).forEach(c=>{ c.y-=g; _domMove(c.id,c.x,c.y); cascadeShift(c.id,0,-g,NM) })
-        }
+        if(d.includes('w') && L < pr.x1){ const g=pr.x1-L; par.x-=g; par.w+=g; _domWall(par) }
+        if(d.includes('n') && T < pr.y1){ const g=pr.y1-T; par.y-=g; par.h+=g; _domWall(par) }
       }
     }
 
