@@ -2525,101 +2525,85 @@ document.addEventListener('mousemove',e=>{
     const NM=getNM()
     const rawDx=(e.clientX-r.lx)/S.zoom, rawDy=(e.clientY-r.ly)/S.zoom
     const d=r.dir
-
-    // Work in terms of 4 edges. Fixed edges come from snapshot; moving edges from mouse.
-    // This way nothing ever drifts and shape only changes on the axis being dragged.
     const MIN_W=NW+2*WALL_PAD_X, MIN_H=WALL_PAD_TOP+NH+WALL_PAD_BOT
 
-    // Fixed edges (opposite side from the drag handle — never touch these)
-    const fixedL = r.ox            // used when dragging e/se/ne
-    const fixedR = r.ox+r.ow       // used when dragging w/sw/nw
-    const fixedT = r.oy            // used when dragging s/se/sw
-    const fixedB = r.oy+r.oh       // used when dragging n/ne/nw
+    // ── 1. Start from snapshot — 4 independent edges ──────────
+    // Only the edges that the handle actually controls can change.
+    // The opposite edges are FROZEN from the snapshot — no drift ever.
+    let L=r.ox,      R=r.ox+r.ow   // left / right
+    let T=r.oy,      B=r.oy+r.oh   // top  / bottom
 
-    // Moving edges — raw from mouse, will be clamped below
-    let edgeR = d.includes('e') ? r.ox+r.ow+rawDx : fixedR
-    let edgeB = d.includes('s') ? r.oy+r.oh+rawDy : fixedB
-    let edgeL = d.includes('w') ? r.ox+rawDx       : fixedL
-    let edgeT = d.includes('n') ? r.oy+rawDy       : fixedT
+    if(d.includes('e')) R=r.ox+r.ow+rawDx
+    if(d.includes('s')) B=r.oy+r.oh+rawDy
+    if(d.includes('w')) L=r.ox+rawDx
+    if(d.includes('n')) T=r.oy+rawDy
 
-    // ── Clamp each MOVING edge independently ──────────────────
+    // ── 2. Minimum size — shrink floor per moving edge ────────
+    if(d.includes('e')) R=Math.max(R, L+MIN_W)
+    if(d.includes('s')) B=Math.max(B, T+MIN_H)
+    if(d.includes('w')) L=Math.min(L, R-MIN_W)
+    if(d.includes('n')) T=Math.min(T, B-MIN_H)
 
-    // Floor: can't be smaller than MIN, can't expose children
-    // Children floor for right/bottom (they don't move when right/bottom shrinks)
-    if(d.includes('e')){
-      let floor=fixedL+MIN_W
-      S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ floor=Math.max(floor, c.x+(c.w||NW)+WALL_PAD_X) })
-      edgeR=Math.max(edgeR, floor)
-    }
-    if(d.includes('s')){
-      let floor=fixedT+MIN_H
-      S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ floor=Math.max(floor, c.y+(c.h||NH)+WALL_PAD_BOT) })
-      edgeB=Math.max(edgeB, floor)
-    }
-    // Children floor for left/top (children shift WITH the edge, so floor is relative)
-    if(d.includes('w')){
-      let ceil=fixedR-MIN_W
-      S.nodes.filter(c=>c.parent===n.id).forEach(c=>{
-        // child will shift by (edgeL - n.x), so its new right edge = c.x+(edgeL-n.x)+(c.w)
-        // We need: edgeL + WALL_PAD_X <= c.x+(edgeL-n.x) → always true
-        // We need: c.x+(edgeL-n.x)+(c.w) <= edgeR-WALL_PAD_X
-        // → edgeL <= n.x + (edgeR-WALL_PAD_X - c.x - cw)  → handled by edgeR floor above
-        // What matters: edgeL can't be so far right that child sticks out right
-        const cRight = c.x+(c.w||NW)  // child's right in current coords
-        ceil=Math.min(ceil, cRight-WALL_PAD_X + (fixedR-r.ox-r.ow) ) // simplification: just limit
-      })
-      edgeL=Math.min(edgeL, ceil)
-    }
-    if(d.includes('n')){
-      let ceil=fixedB-MIN_H
-      edgeT=Math.min(edgeT, ceil)
-    }
+    // ── 3. Children floor (only for shrink — can't expose children) ──
+    // Right/Bottom edges: children stay put, so just check their extents
+    if(d.includes('e')) S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ R=Math.max(R, c.x+(c.w||NW)+WALL_PAD_X) })
+    if(d.includes('s')) S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ B=Math.max(B, c.y+(c.h||NH)+WALL_PAD_BOT) })
+    // Left/Top edges: children shift WITH the edge by delta=(newL-n.x)
+    // So child's new x = c.x + (L - n.x). We need that new x >= L+WALL_PAD_X.
+    // → c.x + L - n.x >= L + WALL_PAD_X → c.x - n.x >= WALL_PAD_X → always true (layout guarantees it)
+    // We DO need: child's new right = c.x+(L-n.x)+(c.w) <= R-WALL_PAD_X
+    // → L <= n.x + R - WALL_PAD_X - c.x - c.w  (only matters if we're shrinking AND the child is wide)
+    if(d.includes('w')) S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ L=Math.min(L, c.x+(c.w||NW)-(R-n.x-r.ow)+n.x-(c.w||NW)) })
+    if(d.includes('n')) S.nodes.filter(c=>c.parent===n.id).forEach(c=>{ T=Math.min(T, c.y+(c.h||NH)-(B-n.y-r.oh)+n.y-(c.h||NH)) })
 
-    // Sibling wall clamp — ONLY clamp the moving edge, fixed edges never move
-    const siblings=S.nodes.filter(s=>s.id!==n.id && s.isBound && (s.parent||null)===(n.parent||null))
-    siblings.forEach(s=>{
-      // Only clamp if there's actual overlap in the OTHER axis (the non-moving one)
-      // We check with the FINAL (post-clamp) values on the stable axis
-      const overlapV = edgeT < s.y+s.h && edgeB > s.y   // vertical overlap
-      const overlapH = edgeL < s.x+s.w && edgeR > s.x   // horizontal overlap
+    // Re-enforce minimum after child floor
+    if(d.includes('e')) R=Math.max(R, L+MIN_W)
+    if(d.includes('s')) B=Math.max(B, T+MIN_H)
+    if(d.includes('w')) L=Math.min(L, R-MIN_W)
+    if(d.includes('n')) T=Math.min(T, B-MIN_H)
 
-      if(d.includes('e') && overlapV && edgeR > s.x)  edgeR = Math.max(fixedL+MIN_W, s.x)
-      if(d.includes('s') && overlapH && edgeB > s.y)  edgeB = Math.max(fixedT+MIN_H, s.y)
-      if(d.includes('w') && overlapV && edgeL < s.x+s.w) edgeL = Math.min(fixedR-MIN_W, s.x+s.w)
-      if(d.includes('n') && overlapH && edgeT < s.y+s.h) edgeT = Math.min(fixedB-MIN_H, s.y+s.h)
+    // ── 4. Sibling wall stop — each moving edge stops at sibling boundary ──
+    // A sibling only blocks a moving edge if it overlaps in the OTHER (stable) axis.
+    // Use the STABLE edges (frozen from snapshot) for the other-axis check.
+    const stableT=r.oy, stableB=r.oy+r.oh, stableL=r.ox, stableR=r.ox+r.ow
+    S.nodes.filter(s=>s.id!==n.id && s.isBound && (s.parent||null)===(n.parent||null)).forEach(s=>{
+      const sL=s.x, sR=s.x+s.w, sT=s.y, sB=s.y+s.h
+      // Check stable axis overlap (1px margin to avoid false triggers on touching walls)
+      const vOverlap = stableT < sB-1 && stableB > sT+1
+      const hOverlap = stableL < sR-1 && stableR > sL+1
+      if(d.includes('e') && vOverlap && R > sL) R = Math.max(L+MIN_W, sL)
+      if(d.includes('s') && hOverlap && B > sT) B = Math.max(T+MIN_H, sT)
+      if(d.includes('w') && vOverlap && L < sR) L = Math.min(R-MIN_W, sR)
+      if(d.includes('n') && hOverlap && T < sB) T = Math.min(B-MIN_H, sB)
     })
 
-    // Parent wall: grow parent if child hits its inner boundary
+    // ── 5. Parent wall: grow parent if this child pushes past its inner edge ──
+    // Only grow, never shrink. Only on the moving axis.
     if(n.parent){
-      const par=NM[n.parent]
-      if(par){
-        const pr=wallRect(par)
-        if(d.includes('e') && edgeR > pr.x2){ par.w+=edgeR-pr.x2; _domWall(par) }
-        if(d.includes('s') && edgeB > pr.y2){ par.h+=edgeB-pr.y2; _domWall(par) }
-        if(d.includes('w') && edgeL < pr.x1){
-          const g=pr.x1-edgeL; par.x-=g; par.w+=g; _domWall(par)
-          // shift all OTHER children of parent (not n) so they don't move visually
-          S.nodes.filter(c=>c.parent===par.id&&c.id!==n.id).forEach(c=>{
-            c.x-=g; _domMove(c.id,c.x,c.y); cascadeShift(c.id,-g,0,NM)
-          })
+      const par=NM[n.parent]; if(par){
+        const pr=wallRect(par) // {x1,y1,x2,y2} inner rect
+        if(d.includes('e') && R > pr.x2){ par.w += R-pr.x2; _domWall(par) }
+        if(d.includes('s') && B > pr.y2){ par.h += B-pr.y2; _domWall(par) }
+        if(d.includes('w') && L < pr.x1){
+          const g=pr.x1-L
+          par.x-=g; par.w+=g; _domWall(par)
+          S.nodes.filter(c=>c.parent===par.id&&c.id!==n.id).forEach(c=>{ c.x-=g; _domMove(c.id,c.x,c.y); cascadeShift(c.id,-g,0,NM) })
         }
-        if(d.includes('n') && edgeT < pr.y1){
-          const g=pr.y1-edgeT; par.y-=g; par.h+=g; _domWall(par)
-          S.nodes.filter(c=>c.parent===par.id&&c.id!==n.id).forEach(c=>{
-            c.y-=g; _domMove(c.id,c.x,c.y); cascadeShift(c.id,0,-g,NM)
-          })
+        if(d.includes('n') && T < pr.y1){
+          const g=pr.y1-T
+          par.y-=g; par.h+=g; _domWall(par)
+          S.nodes.filter(c=>c.parent===par.id&&c.id!==n.id).forEach(c=>{ c.y-=g; _domMove(c.id,c.x,c.y); cascadeShift(c.id,0,-g,NM) })
         }
       }
     }
 
-    // ── Derive final x,y,w,h from clamped edges ────────────────
-    const nx=edgeL, ny=edgeT, nw=edgeR-edgeL, nh=edgeB-edgeT
-
-    // ── Apply ──────────────────────────────────────────────────
+    // ── 6. Derive geometry and apply ──────────────────────────
+    const nx=L, ny=T, nw=R-L, nh=B-T
     const cdx=nx-n.x, cdy=ny-n.y
     n.x=nx; n.y=ny; n.w=nw; n.h=nh
     const el=document.getElementById('nd-'+r.id)
     if(el){el.style.left=nx+'px'; el.style.top=ny+'px'; el.style.width=nw+'px'; el.style.height=nh+'px'}
+    // Children follow only if TL corner moved (L or T changed)
     if(cdx||cdy) cascadeShift(n.id, cdx, cdy, NM)
 
     enforceInvariants()
