@@ -2230,9 +2230,6 @@ function enforceInvariants(){
   })
 
   // I2: no two nodes at the same level overlap
-  // Group by parent. Within each group run up to 8 passes.
-  // Priority: walls are stable anchors; leaves are pushed away from walls first.
-  // Between two walls, or two leaves, push the later-indexed one.
   const groups={}
   S.nodes.forEach(n=>{
     const key=n.parent||'__root__'
@@ -2241,40 +2238,58 @@ function enforceInvariants(){
 
   Object.values(groups).forEach(group=>{
     if(group.length<2) return
-    for(let pass=0;pass<8;pass++){
+    for(let pass=0;pass<12;pass++){
       let anyMoved=false
       for(let i=0;i<group.length;i++){
         for(let j=i+1;j<group.length;j++){
           const a=group[i], b=group[j]
           if(!rectsOverlap(nodeRect(a),nodeRect(b))) continue
 
-          // Who moves? Walls are anchors over leaves. Ties: j moves.
-          // a=wall, b=leaf  → b moves
-          // a=leaf, b=wall  → a moves
-          // both same type  → b moves (j)
-          let mover, anchor
-          if(a.isBound && !b.isBound){ mover=b; anchor=a }
-          else if(!a.isBound && b.isBound){ mover=a; anchor=b }
-          else { mover=b; anchor=a }
+          // Compute penetration on each axis
+          const penL=(a.x+a.w)-b.x  // b must go right
+          const penR=(b.x+b.w)-a.x  // b must go left
+          const penT=(a.y+a.h)-b.y  // b must go down
+          const penB=(b.y+b.h)-a.y  // b must go up
+          const minPen=Math.min(penL,penR,penT,penB)
 
-          const mr=nodeRect(mover), ar=nodeRect(anchor)
-          const p=pushOut(ar.x,ar.y,ar.w,ar.h, mr.x,mr.y,mr.w,mr.h)
-          let nx=p.x, ny=p.y
+          // wall vs wall: split the push equally
+          // wall vs leaf: leaf absorbs all movement
+          // leaf vs leaf: b absorbs all
+          const bothWalls = a.isBound && b.isBound
+          const aIsWall = a.isBound && !b.isBound
+          const bIsWall = !a.isBound && b.isBound
 
-          // Re-clamp inside parent after push (I1 must hold)
-          if(mover.parent){
-            const par=NM[mover.parent]
-            if(par&&par.isBound){
-              const c=clampInsideWall(nx,ny,mr.w,mr.h,par)
-              nx=c.x; ny=c.y
+          function applyMove(node, dx, dy){
+            let nx=node.x+dx, ny=node.y+dy
+            if(node.parent){
+              const par=NM[node.parent]
+              if(par&&par.isBound){ const c=clampInsideWall(nx,ny,node.w||NW,node.h||NH,par); nx=c.x; ny=c.y }
             }
+            const adx=nx-node.x, ady=ny-node.y
+            if(!adx&&!ady) return false
+            node.x=nx; node.y=ny; _domMove(node.id,nx,ny); cascadeShift(node.id,adx,ady,NM)
+            return true
           }
 
-          const dx=nx-mover.x, dy=ny-mover.y
-          if(!dx&&!dy) continue
-          mover.x=nx; mover.y=ny; _domMove(mover.id,mover.x,mover.y)
-          cascadeShift(mover.id,dx,dy,NM)
-          anyMoved=true
+          let moved=false
+          if(minPen===penL){ // push b right (or a left)
+            if(bothWalls){ moved=applyMove(a,-penL/2,0)||applyMove(b,penL/2,0)||moved }
+            else if(aIsWall){ moved=applyMove(b,penL,0) }
+            else { moved=applyMove(bIsWall?a:b, bIsWall?-penL:penL, 0) }
+          } else if(minPen===penR){ // push b left
+            if(bothWalls){ moved=applyMove(a,penR/2,0)||applyMove(b,-penR/2,0)||moved }
+            else if(aIsWall){ moved=applyMove(b,-penR,0) }
+            else { moved=applyMove(bIsWall?a:b, bIsWall?penR:-penR, 0) }
+          } else if(minPen===penT){ // push b down
+            if(bothWalls){ moved=applyMove(a,0,-penT/2)||applyMove(b,0,penT/2)||moved }
+            else if(aIsWall){ moved=applyMove(b,0,penT) }
+            else { moved=applyMove(bIsWall?a:b, 0, bIsWall?-penT:penT) }
+          } else { // push b up
+            if(bothWalls){ moved=applyMove(a,0,penB/2)||applyMove(b,0,-penB/2)||moved }
+            else if(aIsWall){ moved=applyMove(b,0,-penB) }
+            else { moved=applyMove(bIsWall?a:b, 0, bIsWall?penB:-penB) }
+          }
+          if(moved) anyMoved=true
         }
       }
       if(!anyMoved) break
@@ -2540,16 +2555,28 @@ document.addEventListener('mousemove',e=>{
       }
     }
 
-    // 5. Stop at sibling walls — can't grow into them
-    S.nodes.filter(s=>
-      s.id!==n.id && s.isBound &&
-      (s.parent||null)===(n.parent||null)
-    ).forEach(s=>{
-      if(d.includes('e') && nx+nw > s.x && ny<s.y+s.h && ny+nh>s.y) nw=s.x-nx
-      if(d.includes('s') && ny+nh > s.y && nx<s.x+s.w && nx+nw>s.x) nh=s.y-ny
-      if(d.includes('w') && nx < s.x+s.w && ny<s.y+s.h && ny+nh>s.y){ const stop=s.x+s.w; nw=r.ox+r.ow-stop; nx=stop }
-      if(d.includes('n') && ny < s.y+s.h && nx<s.x+s.w && nx+nw>s.x){ const stop=s.y+s.h; nh=r.oy+r.oh-stop; ny=stop }
-    })
+    // 5. Stop at sibling walls — iterate until stable (handles multiple siblings)
+    for(let pass=0; pass<4; pass++){
+      let changed=false
+      S.nodes.filter(s=>s.id!==n.id && s.isBound && (s.parent||null)===(n.parent||null)).forEach(s=>{
+        // Only act if the candidate rect actually overlaps this sibling
+        if(!rectsOverlap({x:nx,y:ny,w:nw,h:nh},{x:s.x,y:s.y,w:s.w,h:s.h})) return
+        // Pull back the moving edge to just touch the sibling
+        if(d.includes('e')){ const limit=s.x;           if(nx+nw>limit){ nw=limit-nx; changed=true } }
+        if(d.includes('s')){ const limit=s.y;           if(ny+nh>limit){ nh=limit-ny; changed=true } }
+        if(d.includes('w')){ const limit=s.x+s.w;       if(nx<limit){ nw=r.ox+r.ow-limit; nx=limit; changed=true } }
+        if(d.includes('n')){ const limit=s.y+s.h;       if(ny<limit){ nh=r.oy+r.oh-limit; ny=limit; changed=true } }
+        // Resize direction is diagonal (e.g. 'se'): check both axes
+        if(d==='se'||d==='ne'||d==='sw'||d==='nw'){
+          if(rectsOverlap({x:nx,y:ny,w:nw,h:nh},{x:s.x,y:s.y,w:s.w,h:s.h})){
+            // Still overlapping — pull back both axes proportionally
+            if(nx+nw>s.x){ nw=s.x-nx; changed=true }
+            if(ny+nh>s.y){ nh=s.y-ny; changed=true }
+          }
+        }
+      })
+      if(!changed) break
+    }
     if(nw<MIN_W){ nw=MIN_W; if(d.includes('w')) nx=r.ox+r.ow-nw }
     if(nh<MIN_H){ nh=MIN_H; if(d.includes('n')) ny=r.oy+r.oh-nh }
 
