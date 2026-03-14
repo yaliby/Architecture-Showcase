@@ -2527,14 +2527,13 @@ document.addEventListener('mousemove',e=>{
     if(d.includes('w')){ nw=r.ow-rawDx; nx=r.ox+r.ow-nw }
     if(d.includes('n')){ nh=r.oh-rawDy; ny=r.oy+r.oh-nh }
 
-    // 2. Can't shrink below absolute minimum
+    // 2. Absolute minimum size
     const MIN_W=NW+2*WALL_PAD_X, MIN_H=WALL_PAD_TOP+NH+WALL_PAD_BOT
     if(nw<MIN_W){ nw=MIN_W; if(d.includes('w')) nx=r.ox+r.ow-nw }
     if(nh<MIN_H){ nh=MIN_H; if(d.includes('n')) ny=r.oy+r.oh-nh }
 
-    // 3. Can't shrink so that children would be outside (floor = children bounding box)
-    //    When dragging left/top wall, children shift with it — so floor uses shifted positions
-    const shiftX=nx-n.x, shiftY=ny-n.y   // how much top-left moved
+    // 3. Can't shrink so children fall outside
+    const shiftX=nx-n.x, shiftY=ny-n.y
     S.nodes.filter(c=>c.parent===n.id).forEach(c=>{
       const cx=c.x+shiftX, cy=c.y+shiftY, cw=c.w||NW, ch=c.h||NH
       const needW=(cx-nx)+cw+WALL_PAD_X
@@ -2543,42 +2542,29 @@ document.addEventListener('mousemove',e=>{
       if(nh<needH){ nh=needH; if(d.includes('n')) ny=r.oy+r.oh-nh }
     })
 
-    // 4. Wall stays inside its own parent (Rule 1 — wall is also a child)
+    // 4. If inside a parent wall: grow it too when we hit its inner edge
     if(n.parent){
       const par=NM[n.parent]
       if(par){
         const pr=wallRect(par)
-        if(nx<pr.x1){ nw-=pr.x1-nx; nx=pr.x1 }
-        if(ny<pr.y1){ nh-=pr.y1-ny; ny=pr.y1 }
-        if(nx+nw>pr.x2) nw=pr.x2-nx
-        if(ny+nh>pr.y2) nh=pr.y2-ny
+        // Growing right → parent right edge needs to accommodate
+        if(d.includes('e') && nx+nw > pr.x2){ par.w+=(nx+nw-pr.x2); const pel=document.getElementById('nd-'+par.id); if(pel) pel.style.width=par.w+'px' }
+        // Growing down → parent bottom edge
+        if(d.includes('s') && ny+nh > pr.y2){ par.h+=(ny+nh-pr.y2); const pel=document.getElementById('nd-'+par.id); if(pel) pel.style.height=par.h+'px' }
+        // Growing left → parent left edge
+        if(d.includes('w') && nx < pr.x1){ const grow=pr.x1-nx; par.x-=grow; par.w+=grow; const pel=document.getElementById('nd-'+par.id); if(pel){pel.style.left=par.x+'px';pel.style.width=par.w+'px'} cascadeShift(par.id,-grow,0,NM) }
+        // Growing up → parent top edge
+        if(d.includes('n') && ny < pr.y1){ const grow=pr.y1-ny; par.y-=grow; par.h+=grow; const pel=document.getElementById('nd-'+par.id); if(pel){pel.style.top=par.y+'px';pel.style.height=par.h+'px'} cascadeShift(par.id,0,-grow,NM) }
       }
     }
 
-    // 5. Stop at sibling walls — iterate until stable (handles multiple siblings)
-    for(let pass=0; pass<4; pass++){
-      let changed=false
-      S.nodes.filter(s=>s.id!==n.id && s.isBound && (s.parent||null)===(n.parent||null)).forEach(s=>{
-        // Only act if the candidate rect actually overlaps this sibling
-        if(!rectsOverlap({x:nx,y:ny,w:nw,h:nh},{x:s.x,y:s.y,w:s.w,h:s.h})) return
-        // Pull back the moving edge to just touch the sibling
-        if(d.includes('e')){ const limit=s.x;           if(nx+nw>limit){ nw=limit-nx; changed=true } }
-        if(d.includes('s')){ const limit=s.y;           if(ny+nh>limit){ nh=limit-ny; changed=true } }
-        if(d.includes('w')){ const limit=s.x+s.w;       if(nx<limit){ nw=r.ox+r.ow-limit; nx=limit; changed=true } }
-        if(d.includes('n')){ const limit=s.y+s.h;       if(ny<limit){ nh=r.oy+r.oh-limit; ny=limit; changed=true } }
-        // Resize direction is diagonal (e.g. 'se'): check both axes
-        if(d==='se'||d==='ne'||d==='sw'||d==='nw'){
-          if(rectsOverlap({x:nx,y:ny,w:nw,h:nh},{x:s.x,y:s.y,w:s.w,h:s.h})){
-            // Still overlapping — pull back both axes proportionally
-            if(nx+nw>s.x){ nw=s.x-nx; changed=true }
-            if(ny+nh>s.y){ nh=s.y-ny; changed=true }
-          }
-        }
-      })
-      if(!changed) break
-    }
-    if(nw<MIN_W){ nw=MIN_W; if(d.includes('w')) nx=r.ox+r.ow-nw }
-    if(nh<MIN_H){ nh=MIN_H; if(d.includes('n')) ny=r.oy+r.oh-nh }
+    // 5. Stop at sibling walls — only clamp the moving edge, shape stays intact
+    S.nodes.filter(s=>s.id!==n.id && s.isBound && (s.parent||null)===(n.parent||null)).forEach(s=>{
+      if(d.includes('e') && nx+nw > s.x && ny<s.y+s.h-1 && ny+nh>s.y+1) nw=Math.max(MIN_W, s.x-nx)
+      if(d.includes('s') && ny+nh > s.y && nx<s.x+s.w-1 && nx+nw>s.x+1) nh=Math.max(MIN_H, s.y-ny)
+      if(d.includes('w') && nx < s.x+s.w && ny<s.y+s.h-1 && ny+nh>s.y+1){ nx=s.x+s.w; nw=r.ox+r.ow-nx; nw=Math.max(MIN_W,nw) }
+      if(d.includes('n') && ny < s.y+s.h && nx<s.x+s.w-1 && nx+nw>s.x+1){ ny=s.y+s.h; nh=r.oy+r.oh-ny; nh=Math.max(MIN_H,nh) }
+    })
 
     // 6. Apply wall geometry
     const cdx=nx-n.x, cdy=ny-n.y
