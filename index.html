@@ -2153,11 +2153,13 @@ function wallMinSize(boundId){
 }
 
 // Clamp {px,py} so a node of size nw×nh fits inside parent wall inner rect
-function clampInsideWall(px, py, nw, nh, par){
-  const r=wallRect(par)
+function clampInsideWall(px, py, nw, nh, par, isBound){
+  const padX = isBound ? 0 : WALL_PAD_X
+  const padTop = isBound ? 0 : WALL_PAD_TOP
+  const padBot = isBound ? 0 : WALL_PAD_BOT
   return {
-    x: Math.max(r.x1, Math.min(px, r.x2-nw)),
-    y: Math.max(r.y1, Math.min(py, r.y2-nh))
+    x: Math.max(par.x + padX, Math.min(px, par.x + par.w - padX - nw)),
+    y: Math.max(par.y + padTop, Math.min(py, par.y + par.h - padBot - nh))
   }
 }
 
@@ -2314,7 +2316,7 @@ function shiftNode(id, dx, dy, NM, applyClamp){
     if(n.parent){
       const par=NM[n.parent]
       if(par&&par.isBound){
-        const c=clampInsideWall(tx,ty,nw,nh,par)
+        const c=clampInsideWall(tx,ty,nw,nh,par, n.isBound)
         tx=c.x; ty=c.y
       }
     }
@@ -2346,7 +2348,7 @@ function shiftNode(id, dx, dy, NM, applyClamp){
     if(n.parent){
       const par=NM[n.parent]
       if(par&&par.isBound){
-        const c=clampInsideWall(tx,ty,nw,nh,par)
+        const c=clampInsideWall(tx,ty,nw,nh,par, n.isBound)
         tx=c.x; ty=c.y
       }
     }
@@ -2607,7 +2609,7 @@ document.addEventListener('mousemove',e=>{
     if(n.parent){
       const par=NM[n.parent]
       if(par){
-        const pr=wallRect(par) // inner usable rect: {x1,y1,x2,y2}
+        const pr = n.isBound ? {x1: par.x, y1: par.y, x2: par.x + par.w, y2: par.y + par.h} : wallRect(par) // usable rect for child
 
         if(d.includes('e')){
           if(R > pr.x2){
